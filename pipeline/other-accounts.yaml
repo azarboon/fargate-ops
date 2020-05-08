@@ -1,0 +1,171 @@
+Description: Enables crosss-account CI/CD by creating required role in environment accounts (dev, test, prod)
+
+Parameters:
+  DevOpsAccountId:
+    Type: Number
+    Description: The AWS account id that holds the pipelines
+    Default: devops-account-id
+  AppName:
+    Type: String
+    Description: Name of app requiring ELB exposure
+    Default: vvvvvvvv
+  CrossAccountCondition:
+    Description: Conditionally creates the resources for cross account access
+    Type: String
+    Default: false
+  Env:
+    Type: String
+    AllowedValues:
+      - dev
+      - test
+      - prod    
+  Subnet1:
+    Type: String
+  Subnet2:
+    Type: String
+  Subnet3:
+    Type: String
+
+
+
+Conditions:
+  AddCodeBuildResource: !Equals [ !Ref CrossAccountCondition, true ]
+
+Resources: 
+  CloudformationRole: 
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Statement: 
+          - 
+            Action: 
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal: 
+              AWS: 
+                - !Ref DevOpsAccountId
+              Service: 
+                - codepipeline.amazonaws.com
+                - codedeploy.amazonaws.com
+                - cloudformation.amazonaws.com
+        Version: "2012-10-17"
+      Policies: 
+        - 
+          PolicyDocument: 
+            Statement: 
+              - 
+                Action: 
+                  - "s3:*"
+                  - "rds:*"
+                  - "waf-regional:*"
+                  - "apigateway:*"
+                  - "events:*"
+                  - "sns:*"
+                  - "kms:Decrypt"
+                  - "iam:*"
+                  - "cloudformation:*"
+                  - "cloudfront:*"
+                  - "lambda:*"
+                  - "secretsmanager:*"
+                  - "ec2:*"
+                  - "cognito-idp:*"
+                  - "cognito-identity:*"
+                  - "ecs:*"
+                Effect: Allow
+                Resource: "*"
+              - 
+                Action: 
+                  - "kms:*"
+                Effect: Allow
+                Resource: !Join ['',['arn:aws:kms:', !Ref "AWS::Region", ':', !Ref DevOpsAccountId, ':key/*']]
+            Version: "2012-10-17"
+          PolicyName: PipelineSupportPolicy
+      RoleName: PipelineSupportRole
+    Type: "AWS::IAM::Role"
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref AppName
+    
+  taskdefinition: 
+    Type: AWS::ECS::TaskDefinition
+    Properties: 
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !Ref TaskExecutionRole
+      RequiresCompatibilities:
+        - "FARGATE"
+      ContainerDefinitions: 
+        - 
+          Name: !Ref AppName
+          # Image: devops-account-id.dkr.ecr.eu-west-1.amazonaws.com/test:latest
+          Image: !Join [ "", [!Ref "AWS::AccountId", ".dkr.ecr.", !Ref "AWS::Region", ".amazonaws.com/", !Ref Repo, ":latest"] ]
+          Essential: true
+
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      LaunchType: FARGATE
+      Cluster: !Ref Cluster
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      DesiredCount: 0
+      TaskDefinition: !Ref taskdefinition
+      ServiceName: !Ref AppName
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: 
+            - !Ref Subnet1
+            - !Ref Subnet2
+            - !Ref Subnet3            
+
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+  
+
+  Repo:
+    Type: AWS::ECR::Repository
+    Properties: 
+      RepositoryName: !Ref AppName
+      RepositoryPolicyText:
+        Version: "2008-10-17"
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::If:
+                  - AddCodeBuildResource
+                  - !Sub "arn:aws:iam::${DevOpsAccountId}:role/${AppName}-${Env}-codebuild"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action:
+              - 'ecr:GetDownloadUrlForLayer'
+              - 'ecr:BatchGetImage'
+              - 'ecr:BatchCheckLayerAvailability'
+              - 'ecr:PutImage'
+              - 'ecr:InitiateLayerUpload'
+              - 'ecr:UploadLayerPart'
+              - 'ecr:CompleteLayerUpload'
+
+
+Outputs:
+  CloudformationRole:
+    Export:
+      Name: !Join [ ":", [ !Ref "AWS::StackName", CloudformationRole ] ]
+    Value: !GetAtt CloudformationRole.Arn

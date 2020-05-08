@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+
+Parameters:
+  AppName:
+    Type: String
+    Default: bbbbbbbbb
+  GitRepository: 
+    Type: String
+    Default: bbbbbb
+  Env:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+  RoleCondition:
+    Description: Conditional to add CodePipeline role and CodeBuild role as principals to CMK key policy
+    Type: String
+    Default: true
+
+
+ 
+
+
+Mappings: 
+  PipelineParams: 
+    dev:
+      # Your environment account id (dev/test/prod)
+      AccountId: ********
+      # upon a new commit to this branch, pipeline gets triggered
+      Branch: master
+
+
+
+Resources:
+
+
+  CommonResources:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: common-resources.yaml
+      TimeoutInMinutes: 120
+      Parameters:
+        AppName: !Ref AppName
+        Env: !Ref Env
+        AccountId: !FindInMap [ PipelineParams, !Ref Env, AccountId]
+        RoleCondition: !Ref RoleCondition
+
+
+  BackendPipeline:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: CommonResources
+    Properties:
+      TemplateURL: backend.yaml
+      TimeoutInMinutes: 30      
+      Parameters:
+        AppName: !Ref AppName
+        Env: !Ref Env
+        ClusterName: !Ref AppName
+        ServiceName: !Ref AppName
+        GitRepository: !Ref GitRepository
+        CodebuildRole: !GetAtt CommonResources.Outputs.CodebuildRole
+        PipeLineRole: !GetAtt CommonResources.Outputs.PipeLineRole
+        Branch: !FindInMap [ PipelineParams, !Ref Env, Branch]
+        AccountId: !FindInMap [ PipelineParams, !Ref Env, AccountId]
+        ArtifactsBucket: !GetAtt CommonResources.Outputs.ArtifactsBucket 
+        Cmk: !GetAtt CommonResources.Outputs.Cmk
+        NotificationTopic: !GetAtt CommonResources.Outputs.NotificationTopic
+
